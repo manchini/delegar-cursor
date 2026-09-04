@@ -1,0 +1,5 @@
+# Trilha de delegacao ao Cursor CLI (skill delegar-cursor).
+# Briefs em .delegacao/briefs/ sao versionados; logs e .live ficam de fora.
+.delegacao/*
+!.delegacao/briefs/
+!.delegacao/briefs/**

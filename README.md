@@ -2,9 +2,9 @@
 
 Skill para o [Claude Code](https://docs.claude.com/en/docs/claude-code) e script PowerShell que despacham tarefas para o `cursor-agent` em modo headless.
 
-O trabalho roda na **cota da Cursor**. A janela de 5h da Anthropic fica para orquestrar: recortar o brief, ler o sidecar de HANDOFF e decidir se aceita, retoma ou escala. O pai não implementa.
+O trabalho roda na **cota da Cursor**. A janela de 5h da Anthropic fica para orquestrar: recortar o brief, ler o sidecar de HANDOFF e decidir se aceita, retoma ou escala. O pai não implementa. Quando fala com o humano, credita o executor com `perfil:` e `modelo:` do sidecar.
 
-Versão da skill: **1.2.0**.
+Versão da skill: **1.3.0**.
 
 ## Quando usar
 
@@ -35,7 +35,7 @@ Binário esperado: `%LOCALAPPDATA%\cursor-agent\agent.cmd`.
 git clone https://github.com/manchini/delegar-cursor.git "$env:USERPROFILE\.claude\skills\delegar-cursor"
 ```
 
-O Claude Code carrega a skill a partir de `SKILL.md`. O comando curto documentado lá é `/delegar`; o ponto de entrada real é o script abaixo.
+O Claude Code carrega a skill a partir de `SKILL.md`. O ponto de entrada é o script abaixo. Diagnóstico: `-Doctor`. Molde de brief: [`referencia/brief-template.md`](referencia/brief-template.md).
 
 ## Uso
 
@@ -54,6 +54,9 @@ $d = "$env:USERPROFILE\.claude\skills\delegar-cursor\scripts\delegar-cursor.ps1"
 # volume mecânico com spec já decidida
 & $d -Perfil lote -Tarefa "Renomeie X para Y em todos os módulos de src/"
 
+# diagnóstico (não despacha)
+& $d -Doctor -Repo "C:\dev\projeto"
+
 # acompanhar a resposta se formando no terminal (humano)
 & $d -Perfil analise -AoVivo -Tarefa "Audite o mapa de tags"
 ```
@@ -63,6 +66,8 @@ Em despacho por agente, use `-SoLog` e **não** use `-AoVivo`. O stdout do scrip
 ```powershell
 Get-Content -Wait <repo>\.delegacao\logs\<arquivo>.md.live
 ```
+
+`-TimeoutMin` impõe teto de relógio (default por perfil; `0` desliga). `-Notificar` dispara toast/som no Windows ao terminar, sem escrever no stdout.
 
 ## Perfis e cota
 
@@ -82,8 +87,8 @@ Dentro do abrangente, esforço não custa cota — custa latência. O default é
 | `plano` | grok-4.6-xhigh | abrangente | read-only | design e fases |
 | `lote` | composer-2.5 | abrangente | escrita | volume mecânico |
 | `implementar` | grok-4.6-xhigh | abrangente | escrita | implementação com raciocínio |
-| `critico` | opus-5-thinking-high | premium | read-only | revisão de alto impacto |
-| `debug` | codex-5.3-high | premium | escrita | bug que o abrangente não resolveu |
+| `critico` | claude-opus-5-thinking-high | premium | read-only | revisão de alto impacto |
+| `debug` | gpt-5.3-codex-high | premium | escrita | bug que o abrangente não resolveu |
 
 Não use `--mode plan` em `-p`: em headless ele não emite stdout. O perfil `plano` roda em `ask`.
 
@@ -95,11 +100,14 @@ Todo despacho injeta um preâmbulo: ler `CLAUDE.md` / `AGENTS.md` / `.cursorrule
 
 ```text
 ## HANDOFF
+- Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 - Feito:
 - Arquivos tocados:
 - Pendente:
 - Proximo passo:
 - Bloqueios:
+## Verificacao
+- <comandos que terminam, ou 'nenhum'>
 ```
 
 Depois do run o script grava um sidecar `*.handoff.md` com esse bloco e, nos perfis de escrita, `git status --short` e `git diff --stat` medidos no checkout.
@@ -108,9 +116,11 @@ Depois do run o script grava um sidecar `*.handoff.md` com esse bloco e, nos per
 |---|---|
 | 0 | HANDOFF presente, Bloqueios vazio/nenhum, CLI ok |
 | 1 | CLI/run quebrou |
-| 2 | terminou, mas HANDOFF ausente ou Bloqueios preenchido |
+| 2 | o pai decide: HANDOFF ausente, Bloqueios, BLOCKED/NEEDS_CONTEXT, ou TIMEOUT |
 
-O pai lê o sidecar. O `.md` completo é trilha para o humano.
+`saida: 0` com `status: DONE_WITH_CONCERNS` não é aceite mudo: o pai lê `Pendente` no sidecar. Timeout em perfil de escrita: confira `git status` antes de `-Continuar`.
+
+O pai lê o sidecar. O `.md` completo é trilha para o humano. Resumo ao humano credita `modelo:` / `perfil:` do frontmatter.
 
 ## Preparar um repo alvo
 
@@ -125,6 +135,9 @@ O pai lê o sidecar. O `.md` completo é trilha para o humano.
 ```text
 SKILL.md                 playbook do orquestrador (Claude Code)
 scripts/delegar-cursor.ps1
+scripts/handoff-parse.ps1
+scripts/testes/handoff.tests.ps1
+referencia/brief-template.md
 referencia/cli-json-template.json
 referencia/cli-json-template.windows.json
 referencia/gitignore-snippet

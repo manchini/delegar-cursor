@@ -1,7 +1,7 @@
 ---
 name: delegar-cursor
 description: Delegar trabalho do Claude Code para o Cursor CLI (agent) em modo headless, com roteamento de modelo consciente de custo e contrato de handoff. Use quando quiser poupar a janela de 5h da Anthropic, despachar trabalho mecanico ou de analise em lote, tocar planos de longa duracao entre sessoes, ou quando o usuario falar em delegar, cursor-agent, economizar cota, offload de tarefa.
-version: 1.2.0
+version: 1.3.0
 source: session-knowledge
 ---
 
@@ -14,16 +14,22 @@ Cursor**, preservando a janela de 5h da assinatura Anthropic.
 brief, lê o sidecar de HANDOFF e decide se retoma ou escala. Não implementa.
 Thinking alto no pai gasta a janela sem melhorar o worker.
 
+Quando falar com o humano, **credite o executor**. Cite `perfil:` e `modelo:`
+(slug) do sidecar — opcionalmente `pool:`. O pai orquestrou; quem analisou ou
+editou foi aquele modelo, na cota da Cursor. Frase do tipo "implementei" ou
+"alterei" sem nomear o worker é crédito errado.
+
 Script: `scripts/delegar-cursor.ps1` (nesta skill). Funciona em qualquer repo
-via `-Repo`. Comando curto no Claude Code: `/delegar`.
+via `-Repo`. Diagnostico: `-Doctor`. Brief: `referencia/brief-template.md`.
 
 ## Playbook do pai (Opus low)
 
 Este é o loop. Não improvise — improvisar, para o Opus, costuma ser reler o log.
 
 1. **Escreva o brief em arquivo**, não inline. Destino versionado:
-   `<repo>/.delegacao/briefs/<rotulo>.md`. O enunciado tem que ser autocontido:
-   o worker não vê esta sessão.
+   `<repo>/.delegacao/briefs/<rotulo>.md`. Use o molde em
+   `referencia/brief-template.md`. Recorte: ~5 passos, ~10 arquivos, 1 camada.
+   O enunciado tem que ser autocontido: o worker não vê esta sessão.
 2. **Dispare em background**, sem `-AoVivo`:
    ```powershell
    $d = "$env:USERPROFILE\.claude\skills\delegar-cursor\scripts\delegar-cursor.ps1"
@@ -36,11 +42,17 @@ Este é o loop. Não improvise — improvisar, para o Opus, costuma ser reler o 
    `Get-Content -Wait <repo>\.delegacao\logs\<arquivo>.md.live`
 4. **Ao terminar, leia só o sidecar** (`*.handoff.md`). Nunca o `.md` completo
    — ele entra na janela de 5h e anula a economia.
-5. **Decida com evidência, não com prosa:**
-   - `saida: 0` + `Bloqueios: nenhum` + `git status` batendo com `Arquivos tocados` → aceitar.
-   - `saida: 2` ou `Bloqueios` preenchido → follow-up curto com `-Continuar` no **mesmo** `-Rotulo`, ou `-Premium` num **run novo** (não misture perfil no `--resume`).
+5. **Decida com evidência, não com prosa** (leia só o sidecar):
+   - `saida: 0` + `status: DONE` + `Bloqueios: nenhum` + `git status` batendo com `Arquivos tocados` → aceitar.
+   - `saida: 0` + `status: DONE_WITH_CONCERNS` → **não** é aceite mudo. Leia `Pendente` e `## Verificacao` no sidecar.
+   - `saida: 2` + `timeout: sim` → confira `git status` antes de `-Continuar`; pode haver edição pela metade.
+   - `saida: 2` ou `Bloqueios` preenchido ou `status: BLOCKED`/`NEEDS_CONTEXT` → follow-up curto com `-Continuar` no **mesmo** `-Rotulo`, ou `-Premium` num **run novo** (não misture perfil no `--resume`).
    - `saida: 1` → o CLI quebrou; leia `## STDERR` no sidecar, não o log inteiro.
-6. **Thinking medium no pai** só quando o *brief* é o trabalho difícil (vários
+6. **Credite o executor na resposta ao humano**, com os campos do sidecar, não
+   com o nome do pai. Exemplo: `perfil=implementar modelo=cursor-grok-4.6-xhigh
+   pool=abrangente`. Sem slug no sidecar (`modelo:` vazio) → diga só o perfil e
+   que o worker foi o Cursor CLI.
+7. **Thinking medium no pai** só quando o *brief* é o trabalho difícil (vários
    docs, trade-off já discutido nesta sessão). High no Claude Code quase nunca:
    se o problema pede isso, o run certo é `-Perfil critico -Premium`.
 
@@ -91,8 +103,8 @@ rápido.
 | `plano` | grok-4.6-**xhigh** | abrangente | read-only | design e fases |
 | `lote` | composer-2.5 | abrangente | **escrita** | volume mecânico: rename, boilerplate, aplicar spec pronta |
 | `implementar` | grok-4.6-**xhigh** | abrangente | **escrita** | implementação que exige raciocínio |
-| `critico` | opus-5-thinking-high | **premium** | read-only | revisão de alto impacto |
-| `debug` | codex-5.3-high | **premium** | **escrita** | bug que o abrangente não resolveu |
+| `critico` | claude-opus-5-thinking-high | **premium** | read-only | revisão de alto impacto |
+| `debug` | gpt-5.3-codex-high | **premium** | **escrita** | bug que o abrangente não resolveu |
 
 **Escrita: `lote` vs `implementar`.** O `composer-2.5` é rápido e bom em aplicar
 uma spec já decidida em volume. Quando a implementação exige raciocínio — decidir
@@ -151,12 +163,17 @@ Todo despacho injeta um preâmbulo que:
 
 ```
 ## HANDOFF
+- Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 - Feito:
 - Arquivos tocados:
 - Pendente:
 - Proximo passo:
 - Bloqueios:
+## Verificacao
+- <comandos que terminam, ou 'nenhum'>
 ```
+
+Nits vão em `Pendente` com `DONE_WITH_CONCERNS`, não em `Bloqueios`.
 
 O script **não acredita só nisso**. Depois do run ele grava um sidecar
 `*.handoff.md` com o bloco HANDOFF +, nos perfis de escrita, `git status --short`
@@ -164,11 +181,16 @@ e `git diff --stat` medidos no checkout. Códigos:
 
 | Exit | Significado |
 |---|---|
-| 0 | HANDOFF presente, Bloqueios vazio/nenhum, CLI ok |
+| 0 | HANDOFF presente, Bloqueios vazio/nenhum, CLI ok (`DONE` ou `DONE_WITH_CONCERNS`) |
 | 1 | CLI/run quebrou |
-| 2 | terminou, mas HANDOFF ausente ou Bloqueios preenchido |
+| 2 | o pai decide: HANDOFF ausente, Bloqueios, BLOCKED/NEEDS_CONTEXT, ou TIMEOUT |
 
-O pai lê o sidecar. O `.md` completo é trilha para o humano.
+Status ausente cai na regra antiga (só Bloqueios) — não vira 2 por ausência.
+TIMEOUT reusa 2 (`timeout: sim` no frontmatter), não cria código 3.
+
+O pai lê o sidecar. O `.md` completo é trilha para o humano. Ao resumir o
+run, o pai nomeia o `modelo:` do frontmatter — não fala como se tivesse
+escrito o diff.
 
 ## Uso
 
@@ -187,6 +209,9 @@ $d = "$env:USERPROFILE\.claude\skills\delegar-cursor\scripts\delegar-cursor.ps1"
 # volume mecânico com spec já decidida
 & $d -Perfil lote -Tarefa "Renomeie X para Y em todos os modulos de src/"
 
+# diagnostico (nao despacha, nao gasta cota)
+& $d -Doctor -Repo "C:\dev\projeto"
+
 # acompanhando a resposta se formar no terminal (humano)
 & $d -Perfil analise -AoVivo -Tarefa "Audite o mapa de tags"
 
@@ -202,8 +227,8 @@ Pasta:
 | `.delegacao/logs/` | gitignored | `*.md` completo, `*.handoff.md`, `.live` durante o run |
 
 O sidecar traz `pool:`, `modelo:`, `duracao_s:`, `tokens_*`, `sessao:`, `saida:`,
-`bloqueios:`. Se o run falhar, o sidecar é gravado mesmo assim (`erro: sim` +
-`## STDERR`).
+`status:`, `timeout:`, `verificacao:`, `bloqueios:`. Se o run falhar, o sidecar é
+gravado mesmo assim (`erro: sim` + `## STDERR`).
 
 ## Saída parcial (streaming)
 
